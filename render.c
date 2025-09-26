@@ -156,6 +156,7 @@ static bool render_frame(struct swaylock_surface *surface) {
 	char ellipsis[ELLIP_LEN] = {0xE2, 0x80, 0xA6 };
 	char password[INV_CHAR_LEN * PASSWORD_LEN + 1];
 	unsigned int i, j;
+	int msg_width = 0;
 
 	bool draw_indicator = state->args.show_indicator &&
 		(state->auth_state != AUTH_STATE_IDLE ||
@@ -167,10 +168,12 @@ static bool render_frame(struct swaylock_surface *surface) {
 			switch (state->auth_state)
 			{
 				case AUTH_STATE_VALIDATING:
-					text = "       Verifying";
+					text = "Verifying";
+					msg_width = 1;
 					break;
 				case AUTH_STATE_INVALID:
-					text = "       Incorrect";
+					text = "Incorrect";
+					msg_width = 1;
 					break;
 				default:
 					char *cptr = password;
@@ -270,6 +273,7 @@ static bool render_frame(struct swaylock_surface *surface) {
 			if (buffer_width < extents.width) {
 				buffer_width = extents.width;
 			}
+			if (msg_width) msg_width = extents.width;
 		}
 		if (layout_text) {
 			cairo_text_extents_t extents;
@@ -364,7 +368,10 @@ static bool render_frame(struct swaylock_surface *surface) {
 			cairo_font_extents(cairo, &fe);
 			x = box_padding;
 			y = fe.ascent + box_padding;
-			cairo_move_to(cairo, x, y);
+			if (msg_width)
+				cairo_move_to(cairo, x + (buffer_width - msg_width) / 2, y);
+			else
+				cairo_move_to(cairo, x, y);
 			cairo_show_text(cairo, text);
 			cairo_close_path(cairo);
 			cairo_new_sub_path(cairo);

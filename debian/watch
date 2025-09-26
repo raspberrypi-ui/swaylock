@@ -1,0 +1,4 @@
+version=4
+opts=uversionmangle=s/(\d)[_\.\-\+]?((rc|beta|alpha)[\d.]*)$/$1~$2/,\
+pgpsigurlmangle=s/archive\/v?(\d\S+)\.tar\.gz/releases\/download\/$1\/swaylock-$1\.tar\.gz\.sig/ \
+  https://github.com/swaywm/swaylock/tags .*/v?(\d\S+)\.tar\.gz

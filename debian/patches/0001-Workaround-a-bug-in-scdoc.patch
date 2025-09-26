@@ -1,0 +1,30 @@
+From 09d199c3d9b5ef750c344f9e63400a19aa0a5926 Mon Sep 17 00:00:00 2001
+From: Birger Schacht <birger@rantanplan.org>
+Date: Fri, 3 May 2019 21:30:43 +0200
+Subject: [PATCH] Workaround a bug in mangpage generator
+
+scdoc doesn't escape a tick at the beginning of the line. until it does,
+we work around the issue so a tick doesn't occur on the beginning of a
+line. https://github.com/swaywm/swaylock/issues/48
+---
+ swaylock.1.scd | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/swaylock.1.scd b/swaylock.1.scd
+index 41ae07e..0d07ae1 100644
+--- a/swaylock.1.scd
++++ b/swaylock.1.scd
+@@ -48,8 +48,8 @@ Locks your Wayland session.
+ 
+ *-i, --image* [[<output>]:]<path>
+ 	Display the given image, optionally only on the given output. Use -c to set
+-	a background color. If the path potentially contains a ':', prefix it with another
+-	':' to prevent interpreting part of it as <output>.
++	a background color. If the path potentially contains a ':', prefix it with
++	another ':' to prevent interpreting part of it as <output>.
+ 
+ *-k, --show-keyboard-layout*
+ 	Display the current xkb layout while typing.
+-- 
+2.25.0
+

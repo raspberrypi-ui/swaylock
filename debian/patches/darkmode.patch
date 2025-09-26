@@ -1,0 +1,59 @@
+diff --git a/main.c b/main.c
+index 44376a6..d86465a 100644
+--- a/main.c
++++ b/main.c
+@@ -428,9 +428,9 @@ static void set_default_colors(struct swaylock_colors *colors) {
+ 		.wrong = 0x7D3300FF,
+ 	};
+ 	colors->text = (struct swaylock_colorset){
+-		.input = 0x000000FF,
++		.input = 0xE5A445FF,
+ 		.cleared = 0x000000FF,
+-		.caps_lock = 0x000000FF,
++		.caps_lock = 0xE5A445FF,
+ 		.verifying = 0x000000FF,
+ 		.wrong = 0x000000FF,
+ 	};
+@@ -754,6 +754,11 @@ static int parse_options(int argc, char **argv, struct swaylock_state *state,
+ 							file = g_strdup (line + 10);
+ 							file[strlen (file) - 1] = 0;
+ 						}
++						if (strstr (line, "PiXonyx"))
++						{
++							state->args.colors.background = 0x000000FF;
++							state->args.colors.separator = 0xA0A0A0FF;
++						}
+ 					}
+ 					free (line);
+ 					fclose (fp);
+diff --git a/render.c b/render.c
+index ebe4397..b3b077b 100644
+--- a/render.c
++++ b/render.c
+@@ -333,7 +333,7 @@ static bool render_frame(struct swaylock_surface *surface) {
+ 	if (state->args.pimode)
+ 	{
+ 		double box_padding = 4.0 * surface->scale;
+-		cairo_set_source_u32(cairo, 0xFFFFFFFF);
++		cairo_set_source_u32(cairo, state->args.colors.background);
+ 		cairo_rectangle (cairo, 0, 0, buffer_width, buffer_height);
+ 		cairo_fill (cairo);
+ 
+@@ -356,7 +356,7 @@ static bool render_frame(struct swaylock_surface *surface) {
+ 
+ 		// Draw a message
+ 		configure_font_drawing(cairo, state, surface->subpixel, arc_radius);
+-		set_color_for_state(cairo, state, &state->args.colors.text);
++		cairo_set_source_u32 (cairo, state->args.colors.separator);
+ 
+ 		if (text) {
+ 			cairo_font_extents_t fe;
+@@ -382,7 +382,7 @@ static bool render_frame(struct swaylock_surface *surface) {
+ 
+ 		if (state->xkb.caps_lock)
+ 		{
+-			cairo_set_source_u32(cairo, 0x000000FF);
++			cairo_set_source_u32(cairo, state->args.colors.separator);
+ 
+ 			cairo_move_to (cairo, CAPS_ORIG_X + CAPS_BOX_WIDTH + CAPS_ARROW_WIDTH * 2, CAPS_ORIG_Y + CAPS_ARROW_HEIGHT);
+ 			cairo_line_to (cairo, CAPS_ORIG_X + CAPS_BOX_WIDTH / 2 + CAPS_ARROW_WIDTH, CAPS_ORIG_Y);

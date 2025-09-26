@@ -1,0 +1,319 @@
+diff --git a/include/swaylock.h b/include/swaylock.h
+index cd4e73e..92d91f6 100644
+--- a/include/swaylock.h
++++ b/include/swaylock.h
+@@ -69,6 +69,7 @@ struct swaylock_args {
+ 	bool daemonize;
+ 	int ready_fd;
+ 	bool indicator_idle_visible;
++	bool pimode;
+ };
+ 
+ struct swaylock_password {
+@@ -82,6 +83,7 @@ struct swaylock_state {
+ 	struct loop_timer *input_idle_timer; // timer to reset input state to IDLE
+ 	struct loop_timer *auth_idle_timer; // timer to stop displaying AUTH_STATE_INVALID
+ 	struct loop_timer *clear_password_timer;  // clears the password buffer
++	struct loop_timer *cursor_flash_timer;
+ 	struct wl_display *display;
+ 	struct wl_compositor *compositor;
+ 	struct wl_subcompositor *subcompositor;
+@@ -98,6 +100,7 @@ struct swaylock_state {
+ 	uint32_t highlight_start; // position of highlight; 2048 = 1 full turn
+ 	int failed_attempts;
+ 	bool run_display, locked;
++	bool flash;
+ 	struct ext_session_lock_manager_v1 *ext_session_lock_manager_v1;
+ 	struct ext_session_lock_v1 *ext_session_lock_v1;
+ };
+@@ -134,7 +137,7 @@ struct swaylock_image {
+ 
+ void swaylock_handle_key(struct swaylock_state *state,
+ 		xkb_keysym_t keysym, uint32_t codepoint);
+-
++void cursor_flash(void *data);
+ void render(struct swaylock_surface *surface);
+ void damage_state(struct swaylock_state *state);
+ void clear_password_buffer(struct swaylock_password *pw);
+diff --git a/main.c b/main.c
+index 4461304..44376a6 100644
+--- a/main.c
++++ b/main.c
+@@ -428,9 +428,9 @@ static void set_default_colors(struct swaylock_colors *colors) {
+ 		.wrong = 0x7D3300FF,
+ 	};
+ 	colors->text = (struct swaylock_colorset){
+-		.input = 0xE5A445FF,
++		.input = 0x000000FF,
+ 		.cleared = 0x000000FF,
+-		.caps_lock = 0xE5A445FF,
++		.caps_lock = 0x000000FF,
+ 		.verifying = 0x000000FF,
+ 		.wrong = 0x000000FF,
+ 	};
+@@ -501,6 +501,7 @@ static int parse_options(int argc, char **argv, struct swaylock_state *state,
+ 		{"show-keyboard-layout", no_argument, NULL, 'k'},
+ 		{"hide-keyboard-layout", no_argument, NULL, 'K'},
+ 		{"show-failed-attempts", no_argument, NULL, 'F'},
++		{"pimode", no_argument, NULL, 'p'},
+ 		{"version", no_argument, NULL, 'v'},
+ 		{"bs-hl-color", required_argument, NULL, LO_BS_HL_COLOR},
+ 		{"caps-lock-bs-hl-color", required_argument, NULL, LO_CAPS_LOCK_BS_HL_COLOR},
+@@ -575,6 +576,8 @@ static int parse_options(int argc, char **argv, struct swaylock_state *state,
+ 			"Same as --scaling=tile.\n"
+ 		"  -u, --no-unlock-indicator        "
+ 			"Disable the unlock indicator.\n"
++		"  -p, --pimode                    "
++			"Custom display for Raspberry Pi.\n"
+ 		"  -v, --version                    "
+ 			"Show the version number and quit.\n"
+ 		"  --bs-hl-color <color>            "
+@@ -666,7 +669,7 @@ static int parse_options(int argc, char **argv, struct swaylock_state *state,
+ 	optind = 1;
+ 	while (1) {
+ 		int opt_idx = 0;
+-		c = getopt_long(argc, argv, "c:deFfhi:kKLlnrs:tuvC:R:", long_options,
++		c = getopt_long(argc, argv, "c:deFfhi:kKLlnprs:tuvC:R:", long_options,
+ 				&opt_idx);
+ 		if (c == -1) {
+ 			break;
+@@ -735,6 +738,35 @@ static int parse_options(int argc, char **argv, struct swaylock_state *state,
+ 				*line_mode = LM_INSIDE;
+ 			}
+ 			break;
++		case 'p':
++			if (state) {
++				state->args.pimode = true;
++				FILE *fp = fopen ("/etc/lightdm/pi-greeter.conf", "rb");
++				char *file = NULL;
++				if (fp)
++				{
++					char *line = NULL;
++					size_t len = 0;
++					while (getline (&line, &len, fp) != -1)
++					{
++						if (!strncmp (line, "wallpaper=", 10) && strlen (line) > 11)
++						{
++							file = g_strdup (line + 10);
++							file[strlen (file) - 1] = 0;
++						}
++					}
++					free (line);
++					fclose (fp);
++				}
++				if (file)
++				{
++					load_image (file, state);
++					g_free (file);
++				}
++				free (state->args.font);
++				state->args.font = strdup ("cairo:monospace");
++			}
++			break;
+ 		case 'r':
+ 			if (line_mode) {
+ 				*line_mode = LM_RING;
+@@ -1110,6 +1142,7 @@ int main(int argc, char **argv) {
+ 		.show_failed_attempts = false,
+ 		.indicator_idle_visible = false,
+ 		.ready_fd = -1,
++		.pimode = false
+ 	};
+ 	wl_list_init(&state.images);
+ 	set_default_colors(&state.args.colors);
+@@ -1248,6 +1281,9 @@ int main(int argc, char **argv) {
+ 
+ 	loop_add_fd(state.eventloop, sigusr_fds[0], POLLIN, term_in, NULL);
+ 
++	if (state.args.pimode)
++		state.cursor_flash_timer = loop_add_timer(state.eventloop, 500, cursor_flash, &state);
++
+ 	struct sigaction sa;
+ 	sa.sa_handler = do_sigusr;
+ 	sigemptyset(&sa.sa_mask);
+diff --git a/render.c b/render.c
+index a5e978f..ebe4397 100644
+--- a/render.c
++++ b/render.c
+@@ -5,11 +5,20 @@
+ #include "background-image.h"
+ #include "swaylock.h"
+ #include "log.h"
++#include "loop.h"
+ 
+ #define M_PI 3.14159265358979323846
+ const float TYPE_INDICATOR_RANGE = M_PI / 3.0f;
+ const float TYPE_INDICATOR_BORDER_THICKNESS = M_PI / 128.0f;
+ 
++void cursor_flash(void *data) {
++	struct swaylock_state *state = data;
++	if (state->flash) state->flash = FALSE;
++	else state->flash = TRUE;
++	damage_state(state);
++	state->cursor_flash_timer = loop_add_timer(state->eventloop, 500, cursor_flash, state);
++}
++
+ static void set_color_for_state(cairo_t *cairo, struct swaylock_state *state,
+ 		struct swaylock_colorset *colorset) {
+ 	if (state->input_state == INPUT_STATE_CLEAR) {
+@@ -138,12 +147,48 @@ static bool render_frame(struct swaylock_surface *surface) {
+ 	char attempts[4]; // like i3lock: count no more than 999
+ 	char *text = NULL;
+ 	const char *layout_text = NULL;
++#define PASSWORD_LEN 20
++#define INV_CHAR_LEN 3
++#define CURSOR_LEN 1
++#define ELLIP_LEN 3
++	char inv_char[INV_CHAR_LEN] = { 0xE2, 0x80, 0xA2 };
++	char cursor[CURSOR_LEN] = { 0x5F };
++	char ellipsis[ELLIP_LEN] = {0xE2, 0x80, 0xA6 };
++	char password[INV_CHAR_LEN * PASSWORD_LEN + 1];
++	unsigned int i, j;
+ 
+ 	bool draw_indicator = state->args.show_indicator &&
+ 		(state->auth_state != AUTH_STATE_IDLE ||
+ 			state->input_state != INPUT_STATE_IDLE ||
+ 			state->args.indicator_idle_visible);
+ 
++		if (state->args.pimode)
++		{
++			switch (state->auth_state)
++			{
++				case AUTH_STATE_VALIDATING:
++					text = "       Verifying";
++					break;
++				case AUTH_STATE_INVALID:
++					text = "       Incorrect";
++					break;
++				default:
++					char *cptr = password;
++					unsigned int len = state->xkb.caps_lock ? PASSWORD_LEN - 2 : PASSWORD_LEN;
++					if (state->password.len > len) len -= 1;
++					else len = state->password.len;
++					for (i = 0; i < len; i++)
++					{
++						if (i == 0 && len != state->password.len) for (j = 0; j < ELLIP_LEN; j++) *cptr++ = ellipsis[j];
++						else for (j = 0; j < INV_CHAR_LEN; j++) *cptr++ = inv_char[j];
++					}
++					if (state->flash) for (i = 0; i < CURSOR_LEN; i++) *cptr++ = cursor[i];
++					*cptr = 0;
++					text = password;
++					break;
++			}
++		}
++                else
+ 	if (draw_indicator) {
+ 		if (state->input_state == INPUT_STATE_CLEAR) {
+ 			// This message has highest priority
+@@ -192,6 +237,29 @@ static bool render_frame(struct swaylock_surface *surface) {
+ 	int buffer_width = buffer_diameter;
+ 	int buffer_height = buffer_diameter;
+ 
++	if (state->args.pimode)
++	{
++		cairo_font_extents_t fe;
++		cairo_text_extents_t extents;
++		double box_padding = 4.0 * surface->scale;
++
++		configure_font_drawing(state->test_cairo, state, surface->subpixel, arc_radius);
++
++		cairo_font_extents(state->test_cairo, &fe);
++		buffer_height = fe.ascent + fe.descent + 2 * box_padding;
++
++		char string[INV_CHAR_LEN * PASSWORD_LEN + CURSOR_LEN + 1];
++		for (i = 0; i < PASSWORD_LEN; i++)
++			for (j = 0; j < INV_CHAR_LEN; j++)
++				string[i * INV_CHAR_LEN + j] = inv_char[j];
++		for (i = 0; i < CURSOR_LEN; i++)
++			string[INV_CHAR_LEN * PASSWORD_LEN + i] = cursor[i];
++		string[INV_CHAR_LEN * PASSWORD_LEN + CURSOR_LEN] = 0;
++
++		cairo_text_extents(state->test_cairo, string, &extents);
++		buffer_width = extents.width + 2 * box_padding;
++	}
++
+ 	if (text || layout_text) {
+ 		cairo_set_antialias(state->test_cairo, CAIRO_ANTIALIAS_BEST);
+ 		configure_font_drawing(state->test_cairo, state, surface->subpixel, arc_radius);
+@@ -262,6 +330,81 @@ static bool render_frame(struct swaylock_surface *surface) {
+ 	float type_indicator_border_thickness =
+ 		TYPE_INDICATOR_BORDER_THICKNESS * surface->scale;
+ 
++	if (state->args.pimode)
++	{
++		double box_padding = 4.0 * surface->scale;
++		cairo_set_source_u32(cairo, 0xFFFFFFFF);
++		cairo_rectangle (cairo, 0, 0, buffer_width, buffer_height);
++		cairo_fill (cairo);
++
++		cairo_set_source_u32(cairo, 0x8F8F8FFF);
++		cairo_move_to (cairo, 1, 0);
++		cairo_line_to (cairo, buffer_width - 1, 0);
++		cairo_stroke (cairo);
++
++		cairo_move_to (cairo, 0, 1);
++		cairo_line_to (cairo, 0, buffer_height - 1);
++		cairo_stroke (cairo);
++
++		cairo_move_to (cairo, 1, buffer_height);
++		cairo_line_to (cairo, buffer_width - 1, buffer_height);
++		cairo_stroke (cairo);
++
++		cairo_move_to (cairo, buffer_width, 1);
++		cairo_line_to (cairo, buffer_width, buffer_height - 1);
++		cairo_stroke (cairo);
++
++		// Draw a message
++		configure_font_drawing(cairo, state, surface->subpixel, arc_radius);
++		set_color_for_state(cairo, state, &state->args.colors.text);
++
++		if (text) {
++			cairo_font_extents_t fe;
++			double x, y;
++			cairo_font_extents(cairo, &fe);
++			x = box_padding;
++			y = fe.ascent + box_padding;
++			cairo_move_to(cairo, x, y);
++			cairo_show_text(cairo, text);
++			cairo_close_path(cairo);
++			cairo_new_sub_path(cairo);
++		}
++
++		// draw the shift indicator
++#define CAPS_ORIG_X (buffer_width - 24)
++#define CAPS_ORIG_Y (buffer_height - 24)
++#define CAPS_BOX_WIDTH 10
++#define CAPS_BOX_HEIGHT 6
++#define CAPS_ARROW_WIDTH 4
++#define CAPS_ARROW_HEIGHT 7
++#define CAPS_BAR_OFFSET 2
++#define CAPS_BAR_HEIGHT 2
++
++		if (state->xkb.caps_lock)
++		{
++			cairo_set_source_u32(cairo, 0x000000FF);
++
++			cairo_move_to (cairo, CAPS_ORIG_X + CAPS_BOX_WIDTH + CAPS_ARROW_WIDTH * 2, CAPS_ORIG_Y + CAPS_ARROW_HEIGHT);
++			cairo_line_to (cairo, CAPS_ORIG_X + CAPS_BOX_WIDTH / 2 + CAPS_ARROW_WIDTH, CAPS_ORIG_Y);
++			cairo_line_to (cairo, CAPS_ORIG_X, CAPS_ORIG_Y + CAPS_ARROW_HEIGHT);
++			cairo_line_to (cairo, CAPS_ORIG_X + CAPS_BOX_WIDTH + CAPS_ARROW_WIDTH * 2, CAPS_ORIG_Y + CAPS_ARROW_HEIGHT);
++			cairo_fill (cairo);
++
++			cairo_move_to (cairo, CAPS_ORIG_X + CAPS_BOX_WIDTH + CAPS_ARROW_WIDTH, CAPS_ORIG_Y + CAPS_ARROW_HEIGHT + CAPS_BOX_HEIGHT);
++			cairo_line_to (cairo, CAPS_ORIG_X + CAPS_BOX_WIDTH + CAPS_ARROW_WIDTH, CAPS_ORIG_Y + CAPS_ARROW_HEIGHT);
++			cairo_line_to (cairo, CAPS_ORIG_X + CAPS_ARROW_WIDTH, CAPS_ORIG_Y + CAPS_ARROW_HEIGHT);
++			cairo_line_to (cairo, CAPS_ORIG_X + CAPS_ARROW_WIDTH, CAPS_ORIG_Y + CAPS_ARROW_HEIGHT + CAPS_BOX_HEIGHT);
++			cairo_line_to (cairo, CAPS_ORIG_X + CAPS_BOX_WIDTH + CAPS_ARROW_WIDTH, CAPS_ORIG_Y + CAPS_ARROW_HEIGHT + CAPS_BOX_HEIGHT);
++			cairo_fill (cairo);
++
++			cairo_move_to (cairo, CAPS_ORIG_X + CAPS_BOX_WIDTH + CAPS_ARROW_WIDTH, CAPS_ORIG_Y + CAPS_ARROW_HEIGHT + CAPS_BOX_HEIGHT + CAPS_BAR_OFFSET + CAPS_BAR_HEIGHT);
++			cairo_line_to (cairo, CAPS_ORIG_X + CAPS_BOX_WIDTH + CAPS_ARROW_WIDTH, CAPS_ORIG_Y + CAPS_ARROW_HEIGHT + CAPS_BOX_HEIGHT + CAPS_BAR_OFFSET);
++			cairo_line_to (cairo, CAPS_ORIG_X + CAPS_ARROW_WIDTH, CAPS_ORIG_Y + CAPS_ARROW_HEIGHT + CAPS_BOX_HEIGHT + CAPS_BAR_OFFSET);
++			cairo_line_to (cairo, CAPS_ORIG_X + CAPS_ARROW_WIDTH, CAPS_ORIG_Y + CAPS_ARROW_HEIGHT + CAPS_BOX_HEIGHT + CAPS_BAR_OFFSET + CAPS_BAR_HEIGHT);
++			cairo_line_to (cairo, CAPS_ORIG_X + CAPS_BOX_WIDTH + CAPS_ARROW_WIDTH, CAPS_ORIG_Y + CAPS_ARROW_HEIGHT + CAPS_BOX_HEIGHT + CAPS_BAR_OFFSET + CAPS_BAR_HEIGHT);
++			cairo_fill (cairo);
++		}
++	} else
+ 	if (draw_indicator) {
+ 		// Fill inner circle
+ 		cairo_set_line_width(cairo, 0);

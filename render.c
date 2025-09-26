@@ -333,7 +333,7 @@ static bool render_frame(struct swaylock_surface *surface) {
 	if (state->args.pimode)
 	{
 		double box_padding = 4.0 * surface->scale;
-		cairo_set_source_u32(cairo, 0xFFFFFFFF);
+		cairo_set_source_u32(cairo, state->args.colors.background);
 		cairo_rectangle (cairo, 0, 0, buffer_width, buffer_height);
 		cairo_fill (cairo);
 
@@ -356,7 +356,7 @@ static bool render_frame(struct swaylock_surface *surface) {
 
 		// Draw a message
 		configure_font_drawing(cairo, state, surface->subpixel, arc_radius);
-		set_color_for_state(cairo, state, &state->args.colors.text);
+		cairo_set_source_u32 (cairo, state->args.colors.separator);
 
 		if (text) {
 			cairo_font_extents_t fe;
@@ -382,7 +382,7 @@ static bool render_frame(struct swaylock_surface *surface) {
 
 		if (state->xkb.caps_lock)
 		{
-			cairo_set_source_u32(cairo, 0x000000FF);
+			cairo_set_source_u32(cairo, state->args.colors.separator);
 
 			cairo_move_to (cairo, CAPS_ORIG_X + CAPS_BOX_WIDTH + CAPS_ARROW_WIDTH * 2, CAPS_ORIG_Y + CAPS_ARROW_HEIGHT);
 			cairo_line_to (cairo, CAPS_ORIG_X + CAPS_BOX_WIDTH / 2 + CAPS_ARROW_WIDTH, CAPS_ORIG_Y);

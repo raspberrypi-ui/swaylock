@@ -428,9 +428,9 @@ static void set_default_colors(struct swaylock_colors *colors) {
 		.wrong = 0x7D3300FF,
 	};
 	colors->text = (struct swaylock_colorset){
-		.input = 0x000000FF,
+		.input = 0xE5A445FF,
 		.cleared = 0x000000FF,
-		.caps_lock = 0x000000FF,
+		.caps_lock = 0xE5A445FF,
 		.verifying = 0x000000FF,
 		.wrong = 0x000000FF,
 	};
@@ -753,6 +753,11 @@ static int parse_options(int argc, char **argv, struct swaylock_state *state,
 						{
 							file = g_strdup (line + 10);
 							file[strlen (file) - 1] = 0;
+						}
+						if (strstr (line, "PiXonyx"))
+						{
+							state->args.colors.background = 0x000000FF;
+							state->args.colors.separator = 0xA0A0A0FF;
 						}
 					}
 					free (line);

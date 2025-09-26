@@ -5,10 +5,19 @@
 #include "background-image.h"
 #include "swaylock.h"
 #include "log.h"
+#include "loop.h"
 
 #define M_PI 3.14159265358979323846
 const float TYPE_INDICATOR_RANGE = M_PI / 3.0f;
 const float TYPE_INDICATOR_BORDER_THICKNESS = M_PI / 128.0f;
+
+void cursor_flash(void *data) {
+	struct swaylock_state *state = data;
+	if (state->flash) state->flash = FALSE;
+	else state->flash = TRUE;
+	damage_state(state);
+	state->cursor_flash_timer = loop_add_timer(state->eventloop, 500, cursor_flash, state);
+}
 
 static void set_color_for_state(cairo_t *cairo, struct swaylock_state *state,
 		struct swaylock_colorset *colorset) {
@@ -138,12 +147,48 @@ static bool render_frame(struct swaylock_surface *surface) {
 	char attempts[4]; // like i3lock: count no more than 999
 	char *text = NULL;
 	const char *layout_text = NULL;
+#define PASSWORD_LEN 20
+#define INV_CHAR_LEN 3
+#define CURSOR_LEN 1
+#define ELLIP_LEN 3
+	char inv_char[INV_CHAR_LEN] = { 0xE2, 0x80, 0xA2 };
+	char cursor[CURSOR_LEN] = { 0x5F };
+	char ellipsis[ELLIP_LEN] = {0xE2, 0x80, 0xA6 };
+	char password[INV_CHAR_LEN * PASSWORD_LEN + 1];
+	unsigned int i, j;
 
 	bool draw_indicator = state->args.show_indicator &&
 		(state->auth_state != AUTH_STATE_IDLE ||
 			state->input_state != INPUT_STATE_IDLE ||
 			state->args.indicator_idle_visible);
 
+		if (state->args.pimode)
+		{
+			switch (state->auth_state)
+			{
+				case AUTH_STATE_VALIDATING:
+					text = "       Verifying";
+					break;
+				case AUTH_STATE_INVALID:
+					text = "       Incorrect";
+					break;
+				default:
+					char *cptr = password;
+					unsigned int len = state->xkb.caps_lock ? PASSWORD_LEN - 2 : PASSWORD_LEN;
+					if (state->password.len > len) len -= 1;
+					else len = state->password.len;
+					for (i = 0; i < len; i++)
+					{
+						if (i == 0 && len != state->password.len) for (j = 0; j < ELLIP_LEN; j++) *cptr++ = ellipsis[j];
+						else for (j = 0; j < INV_CHAR_LEN; j++) *cptr++ = inv_char[j];
+					}
+					if (state->flash) for (i = 0; i < CURSOR_LEN; i++) *cptr++ = cursor[i];
+					*cptr = 0;
+					text = password;
+					break;
+			}
+		}
+                else
 	if (draw_indicator) {
 		if (state->input_state == INPUT_STATE_CLEAR) {
 			// This message has highest priority
@@ -191,6 +236,29 @@ static bool render_frame(struct swaylock_surface *surface) {
 	int buffer_diameter = (arc_radius + arc_thickness) * 2;
 	int buffer_width = buffer_diameter;
 	int buffer_height = buffer_diameter;
+
+	if (state->args.pimode)
+	{
+		cairo_font_extents_t fe;
+		cairo_text_extents_t extents;
+		double box_padding = 4.0 * surface->scale;
+
+		configure_font_drawing(state->test_cairo, state, surface->subpixel, arc_radius);
+
+		cairo_font_extents(state->test_cairo, &fe);
+		buffer_height = fe.ascent + fe.descent + 2 * box_padding;
+
+		char string[INV_CHAR_LEN * PASSWORD_LEN + CURSOR_LEN + 1];
+		for (i = 0; i < PASSWORD_LEN; i++)
+			for (j = 0; j < INV_CHAR_LEN; j++)
+				string[i * INV_CHAR_LEN + j] = inv_char[j];
+		for (i = 0; i < CURSOR_LEN; i++)
+			string[INV_CHAR_LEN * PASSWORD_LEN + i] = cursor[i];
+		string[INV_CHAR_LEN * PASSWORD_LEN + CURSOR_LEN] = 0;
+
+		cairo_text_extents(state->test_cairo, string, &extents);
+		buffer_width = extents.width + 2 * box_padding;
+	}
 
 	if (text || layout_text) {
 		cairo_set_antialias(state->test_cairo, CAIRO_ANTIALIAS_BEST);
@@ -262,6 +330,81 @@ static bool render_frame(struct swaylock_surface *surface) {
 	float type_indicator_border_thickness =
 		TYPE_INDICATOR_BORDER_THICKNESS * surface->scale;
 
+	if (state->args.pimode)
+	{
+		double box_padding = 4.0 * surface->scale;
+		cairo_set_source_u32(cairo, 0xFFFFFFFF);
+		cairo_rectangle (cairo, 0, 0, buffer_width, buffer_height);
+		cairo_fill (cairo);
+
+		cairo_set_source_u32(cairo, 0x8F8F8FFF);
+		cairo_move_to (cairo, 1, 0);
+		cairo_line_to (cairo, buffer_width - 1, 0);
+		cairo_stroke (cairo);
+
+		cairo_move_to (cairo, 0, 1);
+		cairo_line_to (cairo, 0, buffer_height - 1);
+		cairo_stroke (cairo);
+
+		cairo_move_to (cairo, 1, buffer_height);
+		cairo_line_to (cairo, buffer_width - 1, buffer_height);
+		cairo_stroke (cairo);
+
+		cairo_move_to (cairo, buffer_width, 1);
+		cairo_line_to (cairo, buffer_width, buffer_height - 1);
+		cairo_stroke (cairo);
+
+		// Draw a message
+		configure_font_drawing(cairo, state, surface->subpixel, arc_radius);
+		set_color_for_state(cairo, state, &state->args.colors.text);
+
+		if (text) {
+			cairo_font_extents_t fe;
+			double x, y;
+			cairo_font_extents(cairo, &fe);
+			x = box_padding;
+			y = fe.ascent + box_padding;
+			cairo_move_to(cairo, x, y);
+			cairo_show_text(cairo, text);
+			cairo_close_path(cairo);
+			cairo_new_sub_path(cairo);
+		}
+
+		// draw the shift indicator
+#define CAPS_ORIG_X (buffer_width - 24)
+#define CAPS_ORIG_Y (buffer_height - 24)
+#define CAPS_BOX_WIDTH 10
+#define CAPS_BOX_HEIGHT 6
+#define CAPS_ARROW_WIDTH 4
+#define CAPS_ARROW_HEIGHT 7
+#define CAPS_BAR_OFFSET 2
+#define CAPS_BAR_HEIGHT 2
+
+		if (state->xkb.caps_lock)
+		{
+			cairo_set_source_u32(cairo, 0x000000FF);
+
+			cairo_move_to (cairo, CAPS_ORIG_X + CAPS_BOX_WIDTH + CAPS_ARROW_WIDTH * 2, CAPS_ORIG_Y + CAPS_ARROW_HEIGHT);
+			cairo_line_to (cairo, CAPS_ORIG_X + CAPS_BOX_WIDTH / 2 + CAPS_ARROW_WIDTH, CAPS_ORIG_Y);
+			cairo_line_to (cairo, CAPS_ORIG_X, CAPS_ORIG_Y + CAPS_ARROW_HEIGHT);
+			cairo_line_to (cairo, CAPS_ORIG_X + CAPS_BOX_WIDTH + CAPS_ARROW_WIDTH * 2, CAPS_ORIG_Y + CAPS_ARROW_HEIGHT);
+			cairo_fill (cairo);
+
+			cairo_move_to (cairo, CAPS_ORIG_X + CAPS_BOX_WIDTH + CAPS_ARROW_WIDTH, CAPS_ORIG_Y + CAPS_ARROW_HEIGHT + CAPS_BOX_HEIGHT);
+			cairo_line_to (cairo, CAPS_ORIG_X + CAPS_BOX_WIDTH + CAPS_ARROW_WIDTH, CAPS_ORIG_Y + CAPS_ARROW_HEIGHT);
+			cairo_line_to (cairo, CAPS_ORIG_X + CAPS_ARROW_WIDTH, CAPS_ORIG_Y + CAPS_ARROW_HEIGHT);
+			cairo_line_to (cairo, CAPS_ORIG_X + CAPS_ARROW_WIDTH, CAPS_ORIG_Y + CAPS_ARROW_HEIGHT + CAPS_BOX_HEIGHT);
+			cairo_line_to (cairo, CAPS_ORIG_X + CAPS_BOX_WIDTH + CAPS_ARROW_WIDTH, CAPS_ORIG_Y + CAPS_ARROW_HEIGHT + CAPS_BOX_HEIGHT);
+			cairo_fill (cairo);
+
+			cairo_move_to (cairo, CAPS_ORIG_X + CAPS_BOX_WIDTH + CAPS_ARROW_WIDTH, CAPS_ORIG_Y + CAPS_ARROW_HEIGHT + CAPS_BOX_HEIGHT + CAPS_BAR_OFFSET + CAPS_BAR_HEIGHT);
+			cairo_line_to (cairo, CAPS_ORIG_X + CAPS_BOX_WIDTH + CAPS_ARROW_WIDTH, CAPS_ORIG_Y + CAPS_ARROW_HEIGHT + CAPS_BOX_HEIGHT + CAPS_BAR_OFFSET);
+			cairo_line_to (cairo, CAPS_ORIG_X + CAPS_ARROW_WIDTH, CAPS_ORIG_Y + CAPS_ARROW_HEIGHT + CAPS_BOX_HEIGHT + CAPS_BAR_OFFSET);
+			cairo_line_to (cairo, CAPS_ORIG_X + CAPS_ARROW_WIDTH, CAPS_ORIG_Y + CAPS_ARROW_HEIGHT + CAPS_BOX_HEIGHT + CAPS_BAR_OFFSET + CAPS_BAR_HEIGHT);
+			cairo_line_to (cairo, CAPS_ORIG_X + CAPS_BOX_WIDTH + CAPS_ARROW_WIDTH, CAPS_ORIG_Y + CAPS_ARROW_HEIGHT + CAPS_BOX_HEIGHT + CAPS_BAR_OFFSET + CAPS_BAR_HEIGHT);
+			cairo_fill (cairo);
+		}
+	} else
 	if (draw_indicator) {
 		// Fill inner circle
 		cairo_set_line_width(cairo, 0);

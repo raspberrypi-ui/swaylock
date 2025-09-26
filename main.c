@@ -428,9 +428,9 @@ static void set_default_colors(struct swaylock_colors *colors) {
 		.wrong = 0x7D3300FF,
 	};
 	colors->text = (struct swaylock_colorset){
-		.input = 0xE5A445FF,
+		.input = 0x000000FF,
 		.cleared = 0x000000FF,
-		.caps_lock = 0xE5A445FF,
+		.caps_lock = 0x000000FF,
 		.verifying = 0x000000FF,
 		.wrong = 0x000000FF,
 	};
@@ -501,6 +501,7 @@ static int parse_options(int argc, char **argv, struct swaylock_state *state,
 		{"show-keyboard-layout", no_argument, NULL, 'k'},
 		{"hide-keyboard-layout", no_argument, NULL, 'K'},
 		{"show-failed-attempts", no_argument, NULL, 'F'},
+		{"pimode", no_argument, NULL, 'p'},
 		{"version", no_argument, NULL, 'v'},
 		{"bs-hl-color", required_argument, NULL, LO_BS_HL_COLOR},
 		{"caps-lock-bs-hl-color", required_argument, NULL, LO_CAPS_LOCK_BS_HL_COLOR},
@@ -575,6 +576,8 @@ static int parse_options(int argc, char **argv, struct swaylock_state *state,
 			"Same as --scaling=tile.\n"
 		"  -u, --no-unlock-indicator        "
 			"Disable the unlock indicator.\n"
+		"  -p, --pimode                    "
+			"Custom display for Raspberry Pi.\n"
 		"  -v, --version                    "
 			"Show the version number and quit.\n"
 		"  --bs-hl-color <color>            "
@@ -666,7 +669,7 @@ static int parse_options(int argc, char **argv, struct swaylock_state *state,
 	optind = 1;
 	while (1) {
 		int opt_idx = 0;
-		c = getopt_long(argc, argv, "c:deFfhi:kKLlnrs:tuvC:R:", long_options,
+		c = getopt_long(argc, argv, "c:deFfhi:kKLlnprs:tuvC:R:", long_options,
 				&opt_idx);
 		if (c == -1) {
 			break;
@@ -733,6 +736,35 @@ static int parse_options(int argc, char **argv, struct swaylock_state *state,
 		case 'n':
 			if (line_mode) {
 				*line_mode = LM_INSIDE;
+			}
+			break;
+		case 'p':
+			if (state) {
+				state->args.pimode = true;
+				FILE *fp = fopen ("/etc/lightdm/pi-greeter.conf", "rb");
+				char *file = NULL;
+				if (fp)
+				{
+					char *line = NULL;
+					size_t len = 0;
+					while (getline (&line, &len, fp) != -1)
+					{
+						if (!strncmp (line, "wallpaper=", 10) && strlen (line) > 11)
+						{
+							file = g_strdup (line + 10);
+							file[strlen (file) - 1] = 0;
+						}
+					}
+					free (line);
+					fclose (fp);
+				}
+				if (file)
+				{
+					load_image (file, state);
+					g_free (file);
+				}
+				free (state->args.font);
+				state->args.font = strdup ("cairo:monospace");
 			}
 			break;
 		case 'r':
@@ -1110,6 +1142,7 @@ int main(int argc, char **argv) {
 		.show_failed_attempts = false,
 		.indicator_idle_visible = false,
 		.ready_fd = -1,
+		.pimode = false
 	};
 	wl_list_init(&state.images);
 	set_default_colors(&state.args.colors);
@@ -1247,6 +1280,9 @@ int main(int argc, char **argv) {
 	loop_add_fd(state.eventloop, get_comm_reply_fd(), POLLIN, comm_in, NULL);
 
 	loop_add_fd(state.eventloop, sigusr_fds[0], POLLIN, term_in, NULL);
+
+	if (state.args.pimode)
+		state.cursor_flash_timer = loop_add_timer(state.eventloop, 500, cursor_flash, &state);
 
 	struct sigaction sa;
 	sa.sa_handler = do_sigusr;

@@ -69,6 +69,7 @@ struct swaylock_args {
 	bool daemonize;
 	int ready_fd;
 	bool indicator_idle_visible;
+	bool pimode;
 };
 
 struct swaylock_password {
@@ -82,6 +83,7 @@ struct swaylock_state {
 	struct loop_timer *input_idle_timer; // timer to reset input state to IDLE
 	struct loop_timer *auth_idle_timer; // timer to stop displaying AUTH_STATE_INVALID
 	struct loop_timer *clear_password_timer;  // clears the password buffer
+	struct loop_timer *cursor_flash_timer;
 	struct wl_display *display;
 	struct wl_compositor *compositor;
 	struct wl_subcompositor *subcompositor;
@@ -98,6 +100,7 @@ struct swaylock_state {
 	uint32_t highlight_start; // position of highlight; 2048 = 1 full turn
 	int failed_attempts;
 	bool run_display, locked;
+	bool flash;
 	struct ext_session_lock_manager_v1 *ext_session_lock_manager_v1;
 	struct ext_session_lock_v1 *ext_session_lock_v1;
 };
@@ -134,7 +137,7 @@ struct swaylock_image {
 
 void swaylock_handle_key(struct swaylock_state *state,
 		xkb_keysym_t keysym, uint32_t codepoint);
-
+void cursor_flash(void *data);
 void render(struct swaylock_surface *surface);
 void damage_state(struct swaylock_state *state);
 void clear_password_buffer(struct swaylock_password *pw);
